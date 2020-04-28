@@ -38,16 +38,19 @@ _EMAILAUTHORRE = r'Verified email at '
 
 _SESSION = requests.Session()
 _PAGESIZE = 100
+_PROXY = {}
 
 
 def use_proxy(http='socks5://127.0.0.1:9050', https='socks5://127.0.0.1:9050'):
     """ Routes scholarly through a proxy (e.g. tor).
         Requires pysocks
         Proxy must be running."""
-    _SESSION.proxies ={
+    _SESSION.proxies = {
             'http': http,
             'https': https
     }
+    global _PROXY
+    _PROXY = _SESSION.proxies
 
 
 def _handle_captcha(url):
@@ -77,7 +80,7 @@ def _handle_captcha(url):
 def _get_page(pagerequest):
     """Return the data for a page on scholar.google.com"""
     # Note that we include a sleep to avoid overloading the scholar server
-    time.sleep(5+random.uniform(0, 5))
+    # time.sleep(5+random.uniform(0, 5))
     resp = _SESSION.get(pagerequest, headers=_HEADERS, cookies=_COOKIES)
     if resp.status_code == 200:
         return resp.text
@@ -91,7 +94,21 @@ def _get_page(pagerequest):
         # resp = _handle_captcha(captcha_url)
         # return _get_page(re.findall(r'https:\/\/(?:.*?)(\/.*)', resp)[0])
     else:
+        reset_client_status()
         raise Exception('Error: {0} {1}'.format(resp.status_code, resp.reason))
+
+
+def reset_client_status():
+    global _SESSION
+    _SESSION.close()
+    _SESSION = requests.Session()
+    _SESSION.proxies = _PROXY
+
+    gid = hashlib.md5(str(random.random()).encode('utf-8')).hexdigest()[:16]
+
+    global _COOKIES
+    _COOKIES = {'GSP': 'ID={0}:CF=4'.format(gid)}
+    print('reset: {}', _SESSION)
 
 
 def _get_soup(pagerequest):
@@ -172,6 +189,9 @@ class Publication(object):
                     self.id_scholarcitedby = re.findall(_SCHOLARPUBRE, link['href'])[0]
             if __data.find('div', class_='gs_ggs gs_fl'):
                 self.bib['eprint'] = __data.find('div', class_='gs_ggs gs_fl').a['href']
+        elif pubtype == 'database':
+            self.source = 'citations'
+            self.id_citations = __data['id_citations']
         self._filled = False
 
     def fill(self):
@@ -198,11 +218,14 @@ class Publication(object):
                 elif key == 'Publisher':
                     self.bib['publisher'] = val.text
                 elif key == 'Publication date':
-                    self.bib['year'] = arrow.get(val.text).year
+                    try:
+                        self.bib['year'] = arrow.get(val.text).year
+                    except arrow.parser.ParserError:
+                        self.bib['year'] = int(val.text[:4])
                 elif key == 'Description':
                     if val.text[0:8].lower() == 'abstract':
                         val = val.text[9:].strip()
-                    self.bib['abstract'] = val
+                    self.bib['abstract'] = val.text
                 elif key == 'Total citations':
                     self.id_scholarcitedby = re.findall(_SCHOLARPUBRE, val.a['href'])[0]
 
